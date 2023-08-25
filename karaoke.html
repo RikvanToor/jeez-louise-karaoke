@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <script src="https://unpkg.com/peaks.js/dist/peaks.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"
+    integrity="sha512-WFN04846sdKMIP5LKNphMaWzU7YpMyCU245etK3g/2ARYbPK9Ub18eG+ljU96qKRCWh+quCY7yefSmlkQw1ANQ=="
+    crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://colxi.info/midi-parser-js/src/main.js"></script>
+  <script src="https://cdn.rawgit.com/localForage/localForage/4ce19202/dist/localforage.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" integrity="sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <style>
+    #zoomview-container,
+    #overview-container,
+    #wordview-container {
+      width: 1000px;
+      height: 100px;
+    }
+
+    #lyrics {
+      width: 1000px;
+      height: 500px;
+      display: block;
+    }
+
+    .active-tool {
+      background-color: red;
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <h3>Stappenplan</h3>
+  <ol>
+    <li>Download het nummer. Het makkelijkste van youtube via yt-dlp. Zorg wel dat je een filmpje pakt zonder rare video intermezzo's of zo.</li>
+    <li>Synchroniseer de audio met de grid in je DAW. In Ableton is dit relatief makkelijk.</li>
+    <li>Voeg een click track toe. Zorg dat je een maat aftellen aan het begin overhoudt.</li>
+    <li>Exporteer de de audio een keer met het origineel en de click track, en een keertje met alleen de click track.</li>
+    <li>Eventueel kun je een MIDI track in je DAW maken met de tekst timings erin. Dit is accurater dan wat je op deze pagina kunt doen en dus aan te raden. Het maakt niet uit wat voor noten je gebruikt, maar zorg dat er geen noten overlappen. Altijd maximaal 1 noot tegelijk dus. Denk er ook aan dat iedere noot één woord is, en dus niet één lettergreep.</li>
+    <li>Open het audiobestand met het origineel en de click op deze pagina.</li>
+    <li>Plak de songtekst in het daarvoor bedoelde tekstvak.</li>
+    <li>Open eventueel je MIDI bestand, als je die gemaakt hebt. Vul bij de BPM wat de BPM in je DAW was.</li>
+    <li>Edit de boel. Wanneer de muziek afspeelt kun je de N-toets ingedrukt houden om een noot/woord op te nemen. Deze houdt net zo lang aan als dat je de toets ingedrukt houdt. Je kunt op een noot klikken om hem te verwijderen.</li>
+    <li>Wanneer je klaar bent, open je het audio bestand met alleen de click.</li>
+    <li>Druk op save en upload het ZIP-bestand naar de drive.</li>
+  </li>
+  </ol>
+  <input id="audio-file-input" accept="audio/*" type="file">Audio File<br/>
+  BPM: <input id="midi-file-bpm-input" type="number"></input><input id="midi-file-input" accept="audio/midi" type="file">MIDI File
+  <div id="overview-container"></div>
+  <div id="zoomview-container"></div>
+  <div id="wordview-container"></div>
+  <audio id="main-audio">
+    <!-- <source src="Elton John - I'm Still Standing.wav" type="audio/wav"/> -->
+    <!-- <source src="my-generation.wav" type="audio/wav"/> -->
+    <source src="" type="audio/wav"/>
+  </audio>
+  <div>
+    <button class="tool hidden" id="move">&#10021;</button>
+    <button class="tool hidden active-tool" id="delete">&#128465;</button>
+    <button class="tool hidden" id="resize">&#8703;</button>
+  </div>
+  <div>
+    <button id="play-pause">Play/Pause</button>
+    Zoom:
+    <button id="zoom-in">+</button>
+    <button id="zoom-out">-</button>
+    Speed:
+    <button id="speed-up">+</button>
+    <button id="slow-down">-</button>
+    <span id="speed">1</span>
+  </div>
+  <div>
+    <button id="save">Save</button>
+  </div>
+  <script>
+    document.state = {lyrics: "", wordData: []};
+    storedState = JSON.parse(window.localStorage.getItem('state'));
+    if (storedState) {
+      document.state = storedState;
+    }
+    (function (Peaks) {
+      const options = {
+        zoomview: {
+          container: document.getElementById('zoomview-container')
+        },
+        overview: {
+          container: document.getElementById('overview-container')
+        },
+        mediaElement: document.getElementById('main-audio'),
+        webAudio: {
+          audioContext: new AudioContext()
+        },
+        zoomLevels: [64, 128, 256, 512, 1024, 2048, 4096]
+      };
+
+      const initPeaks = () => Peaks.init(options, function (err, peaks) {
+        if (err) {
+          console.error('Failed to initialize Peaks instance: ' + err.message);
+          return;
+        }
+
+
+        document.getElementById('lyrics').textContent = document.state.lyrics;
+
+        // Set initial zoom
+        peaks.zoom.setZoom(2);
+        options.mediaElement.volume = 1;
+        // Set up controls
+        document.getElementById('zoom-in').onclick = () => peaks.zoom.zoomIn();
+        document.getElementById('zoom-out').onclick = () => peaks.zoom.zoomOut();
+        document.getElementById('speed-up').onclick = () => changeSpeed(0.1);
+        document.getElementById('slow-down').onclick = () => changeSpeed(-0.1);
+        document.getElementById('play-pause').onclick = playPause;
+        document.getElementById('move').onclick = () => switchTool('move');
+        document.getElementById('delete').onclick = () => switchTool('delete');
+        document.getElementById('resize').onclick = () => switchTool('resize');
+        document.getElementById('save').onclick = save;
+
+        // Set up canvas
+        const wordview = {
+          container: document.getElementById('wordview-container')
+        }
+        const wordviewCanvas = document.createElement('canvas');
+        wordview.container.appendChild(wordviewCanvas);
+        const totalWidth = peaks.views._zoomview.getWidth();
+        wordviewCanvas.height = 100;
+        wordviewCanvas.width = totalWidth;
+        const ctx = wordviewCanvas.getContext("2d");
+        document.tool = 'delete';
+
+        var lastStartTime = null;
+        var lastEndTime = null;
+
+        function storeState() {
+          window.localStorage.setItem('state', JSON.stringify(document.state));
+        }
+
+        function save() {
+          const lines = document.state.lyrics.split('\n');
+          // Shorten lines wherever needed
+          for (var i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const newLines = [];
+            const words = _.words(line, /[^, \n]+/g);
+            // Accomodate for no space before first word
+            var lineLength = -1;
+            var currentNewLine = [];
+            words.forEach((w) => {
+              currentNewLine.push(w);
+              lineLength += w.length + 1;
+              if (lineLength > 20) {
+                newLines.push(currentNewLine.join(' '));
+                currentNewLine = [];
+                lineLength = -1;
+              }
+            })
+            if (currentNewLine.length > 0) {
+              newLines.push(currentNewLine.join(' '));
+            }
+            lines.splice(i, 1, ...newLines);
+          }
+          const result = [];
+          var i = 0;
+          lastTiming = 0;
+          lines.forEach((l) => {
+            const words = _.words(l, /[^, \n]+/g);
+            const line = [];
+            if (i > 0) {
+              lastTiming = document.state.wordData[i-1].end;
+            }
+            if (words[0]) {
+              if(document.state.wordData[i]) {
+                line.push('[' + prettyTiming(lastTiming) + ']');
+              }
+            }
+            words.forEach((w) => {
+              const wd = document.state.wordData[i];
+              if (wd) {
+                line.push(`<${prettyTiming(wd.start)}> ${wd.word} <${prettyTiming(wd.end)}>`);
+              }
+              i++;
+            });
+            result.push(line.join(' '));
+          });
+
+          localforage.getItem('audio-file').then((f) => {
+            const audioFileName = f.name;
+            const baseName = audioFileName.split('.')[0];
+            const lrcContent = result.join('\r\n');
+            const zip = new JSZip();
+            zip.file(`${baseName}.lrc`, lrcContent);
+            zip.file(audioFileName, f);
+            zip.generateAsync({type:"blob"})
+              .then((zipContent) => {
+                const url = window.URL.createObjectURL(new File([zipContent], `${baseName}.zip`, {
+                  type: 'zip/zip',
+                }));
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.setAttribute('download', `${baseName}.zip`);
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+              });
+          });
+        }
+
+        function prettyTiming(time) {
+          const minutes = Math.floor(time / 60);
+          const seconds = Math.floor(time) % 60;
+          const ms = time - Math.floor(time);
+          return `${(minutes + "").padStart(2, 0)}:${(seconds + "").padStart(2, 0)}.${(Math.round(ms * 1000) + "").padStart(3, 0)}`
+        }
+
+
+        function playPause() {
+          if (options.mediaElement.paused) {
+            options.mediaElement.play();
+          } else {
+            options.mediaElement.pause();
+          }
+        }
+
+        function changeSpeed(delta) {
+          options.mediaElement.playbackRate += delta;
+          document.getElementById('speed').innerText = Math.round(options.mediaElement.playbackRate * 10) / 10;
+        }
+
+        function switchTool(tool) {
+          document.tool = tool;
+          const buttons = Array.from(document.getElementsByClassName('tool'));
+          buttons.forEach((b) => b.classList.remove('active-tool'));
+          document.getElementById(tool).classList.add('active-tool');
+        }
+
+        function timeToPx(time) {
+          const startTime = peaks.views._zoomview.getStartTime();
+          const endTime = peaks.views._zoomview.getEndTime();
+          const pps = totalWidth / (endTime - startTime);
+          return Math.min(totalWidth, Math.max(0, (time - startTime) * pps));
+        }
+
+        function pxToTime(px) {
+          const startTime = peaks.views._zoomview.getStartTime();
+          const endTime = peaks.views._zoomview.getEndTime();
+          const pps = totalWidth / (endTime - startTime);
+          return px / pps + startTime;
+        }
+
+        function drawNote(note) {
+          const startPx = timeToPx(note.start);
+          const endPx = timeToPx(note.end);
+          const width = endPx - startPx;
+          ctx.fillStyle = "red"
+          ctx.fillRect(startPx, 40, width, 20);
+          if (note.word) {
+            ctx.fillStyle = "black";
+            ctx.font = '14px sans-serif';
+            ctx.fillText(note.word, startPx, 30);
+          }
+        }
+
+        function setupWords() {
+          const lyrics = document.state.lyrics;
+          const words = _.words(lyrics, /[^, \n]+/g);
+          document.state.wordData.forEach((wd, i) => wd.word = words[i]);
+        }
+
+        function updateWordview() {
+          const startTime = peaks.views._zoomview.getStartTime();
+          const endTime = peaks.views._zoomview.getEndTime();
+          if (startTime !== lastStartTime || endTime !== lastEndTime || document.forceRefresh) {
+            document.forceRefresh = false;
+            // Clear canvas
+            ctx.clearRect(0, 0, totalWidth, wordviewCanvas.height);
+
+            // Draw all word timings in view
+            const relevantWords = document.state.wordData.filter((x) => x.start <= endTime && x.end >= startTime);
+            relevantWords.forEach((x) => {
+              drawNote(x);
+            });
+
+            lastStartTime = startTime;
+            lastEndTime = endTime;
+          }
+          // Draw current recording note
+          if (document.recording && document.recordStart) {
+            drawNote({ start: document.recordStart, end: peaks.player.getCurrentTime() });
+          }
+          setTimeout(updateWordview, 10)
+        }
+
+        wordviewCanvas.onclick = (e) => {
+          const canvasX = e.pageX - wordviewCanvas.offsetLeft - wordviewCanvas.clientLeft;
+          const canvasY = e.pageY - wordviewCanvas.offsetTop - wordviewCanvas.clientTop;
+          switch (document.tool) {
+            case 'delete':
+              if (canvasY >= 40 && canvasY <= 60) {
+                const time = pxToTime(canvasX);
+                const i = _.findIndex(document.state.wordData, (wd) => wd.start <= time && wd.end >= time);
+                if (i > -1) {
+                  document.state.wordData.splice(i, 1);
+                  setupWords();
+                  storeState();
+                  document.forceRefresh = true;
+                }
+              }
+              break;
+          }
+        };
+
+        document.addEventListener('keydown', (e) => {
+          if (e.keyCode == 78 && peaks.player.isPlaying() && !document.recording) {
+            document.recording = true;
+            document.recordStart = peaks.player.getCurrentTime();
+          }
+          // if (e.keyCode == 32) {
+          //   e.preventDefault();
+          //   playPause();
+          // }
+        });
+
+        document.addEventListener('keyup', (e) => {
+          if (e.keyCode == 78) {
+            document.recording = false;
+            if (document.recordStart) {
+              document.recording = false;
+              const recordEnd = peaks.player.getCurrentTime();
+              const newWordData = { start: document.recordStart, end: recordEnd };
+              const index = _.sortedIndexBy(document.state.wordData, newWordData, (x) => x.start);
+              document.state.wordData.splice(index, 0, newWordData)
+              storeState();
+              setupWords();
+              document.recordStart = null;
+              document.forceRefresh = true;
+            }
+          }
+        });
+
+        document.getElementById('lyrics').addEventListener('input', (e) => {
+          document.state.lyrics = e.target.value;
+          setupWords();
+          storeState();
+          document.forceRefresh = true;
+        });
+
+        document.getElementById('audio-file-input').addEventListener('input', (e) => {
+          const file = e.target.files[0];
+          localforage.setItem('audio-file', file);
+          const u = URL.createObjectURL(file);
+          peaks.setSource({mediaUrl: u, webAudio: { audioContext: new AudioContext() }}, (e) => {});
+        });
+
+        MidiParser.parse(document.getElementById('midi-file-input'), (mid) => {
+          const bpm = document.getElementById('midi-file-bpm-input').value * 1;
+          const mspb = 60000000 / bpm;
+          const tickLength = mspb / mid.timeDivision;
+
+          let wordTimings = [];
+          let curTime = 0;
+          let noteStart = 0;
+          let noteEnd = 0;
+          let i = 0;
+          mid.track[0].event.forEach((e) => {
+            curTime += e.deltaTime * tickLength / 1000000;
+            switch (e.type) {
+              case 9:
+                noteStart = curTime;
+                break;
+              case 8:
+                noteEnd = curTime;
+                wordTimings.push({start: noteStart, end: noteEnd});
+                i++;
+                break;
+              default:
+                break;
+            };
+          });
+          document.state.wordData = wordTimings;
+          setupWords();
+          storeState();
+          document.forceRefresh = true;
+        })
+
+        setTimeout(updateWordview, 10);
+        console.log(peaks);
+
+      });
+
+      localforage.getItem('audio-file').then((r) => {
+        if (r) {
+          const u = URL.createObjectURL(r);
+          document.querySelector('#main-audio source').src = u;
+          initPeaks();
+          document.audioInitialised = true;
+        } else {
+          document.getElementById('audio-file-input').addEventListener('input', (e) => {
+            if (!document.audioInitialised) {
+              const file = e.target.files[0];
+              localforage.setItem('audio-file', file);
+              const u = URL.createObjectURL(file);
+              document.querySelector('#main-audio source').src = u;
+              initPeaks();
+              document.audioInitialised = true;
+            }
+          });
+        }
+      });
+    })(peaks);
+  </script>
+  <textarea id="lyrics">
+  </textarea>
+</body>
+
+</html>
