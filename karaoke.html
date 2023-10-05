@@ -50,7 +50,9 @@
   </li>
   </ol>
   <input id="audio-file-input" accept="audio/*" type="file">Audio File<br/>
-  BPM: <input id="midi-file-bpm-input" type="number"></input><input id="midi-file-input" accept="audio/midi" type="file">MIDI File
+  BPM: <input id="midi-file-bpm-input" type="number"></input>
+  <input id="midi-file-input" accept="audio/midi" type="file" />MIDI File<br/>
+  <input id="project-file-input" accept="application/zip" type="file" />Project file (verwijdert alle changes)
   <div id="overview-container"></div>
   <div id="zoomview-container"></div>
   <div id="wordview-container"></div>
@@ -105,7 +107,7 @@
         }
 
 
-        document.getElementById('lyrics').textContent = document.state.lyrics;
+        document.getElementById('lyrics').value = document.state.lyrics;
 
         // Set initial zoom
         peaks.zoom.setZoom(2);
@@ -120,6 +122,7 @@
         document.getElementById('delete').onclick = () => switchTool('delete');
         document.getElementById('resize').onclick = () => switchTool('resize');
         document.getElementById('save').onclick = save;
+        document.getElementById('clear').onclick = clearData;
 
         // Set up canvas
         const wordview = {
@@ -147,6 +150,10 @@
             const line = lines[i];
             const newLines = [];
             const words = _.words(line, /[^, \n]+/g);
+            // Leave empty lines as is
+            if (words.length == 0) {
+              continue;
+            }
             // Accomodate for no space before first word
             var lineLength = -1;
             var currentNewLine = [];
@@ -209,6 +216,13 @@
                 window.URL.revokeObjectURL(url);
               });
           });
+        }
+
+        function clearData() {
+          if(confirm('Weet je zeker dat je alles wil verwijderen?')) {
+            document.state = {lyrics: "", wordData: []};
+            document.getElementById('lyrics').value = '';
+          }
         }
 
         function prettyTiming(time) {
@@ -320,10 +334,12 @@
             document.recording = true;
             document.recordStart = peaks.player.getCurrentTime();
           }
-          // if (e.keyCode == 32) {
-          //   e.preventDefault();
-          //   playPause();
-          // }
+          if (e.keyCode == 32) {
+            if (e.target.closest('textarea') === null) {
+              e.preventDefault();
+              playPause();
+            }
+          }
         });
 
         document.addEventListener('keyup', (e) => {
@@ -356,6 +372,70 @@
           const u = URL.createObjectURL(file);
           peaks.setSource({mediaUrl: u, webAudio: { audioContext: new AudioContext() }}, (e) => {});
         });
+
+        document.getElementById('project-file-input').addEventListener('input', (e) => {
+          const file = e.target.files[0];
+          JSZip.loadAsync(file).then((zip) => {
+            const filenames = Object.keys(zip.files);
+            if (filenames.length !== 2) {
+              return alert('Moeilijk! Er zitten geen twee files in de zip.');
+            }
+            const lrcFiles = filenames.filter((x) => x.slice(-4) === '.lrc');
+            if (lrcFiles.length !== 1) {
+              return alert('Moeilijk! Er zit geen lyrics file in de zip.');
+            }
+            const lrcFile = zip.files[lrcFiles[0]];
+            const audioFile = zip.files[filenames.filter((x) => x !== lrcFiles[0])[0]];
+            lrcFile.async("string").then((lrcContent) => {
+              // TODO: parse LRC
+
+              const lines = lrcContent.split('\n');
+              const textLines = [];
+              const wordDataList = [];
+              lines.forEach((l) => {
+                const words = _.words(l, /[^, \n]+/g);
+                if (words.length === 0) {
+                  textLines.push("");
+                  return;
+                }
+                textLines.push(words.filter((x) => !x.match(/[\[<]\d\d:\d\d\.\d+[\]>]/g)).join(' '))
+                const chunks = _.chunk(_.tail(words), 3);
+                chunks.forEach((c) => {
+                  if(c.length !== 3) {
+                    alert('Regel "' + l + '" heeft niet de verwachtte indeling.');
+                    return;
+                  }
+                  const startTime = parseTime(c[0]);
+                  const endTime = parseTime(c[2]);
+                  wordDataList.push({ start: startTime, end: endTime });
+                });
+              });
+
+              document.state.wordData = wordDataList;
+              document.state.lyrics = textLines.join('\n');
+              document.getElementById('lyrics').value = document.state.lyrics;
+              storeState();
+              setupWords();
+              document.forceRefresh = true;
+            });
+            audioFile.async('blob').then((audioBlob) => {
+              localforage.setItem('audio-file', audioBlob);
+              const u = URL.createObjectURL(audioBlob);
+              peaks.setSource({mediaUrl: u, webAudio: { audioContext: new AudioContext() }}, (e) => {});
+            });
+          })
+        });
+
+        function parseTime(timeString) {
+          const matches = timeString.match(/\d\d:\d\d\.\d+/g);
+          if (!matches) {
+            alert('Error: ' + timeString + ' is geen goede time string (verwacht formaat mm:ss.ms)');
+            console.error(timeString + ' is geen goede time string (verwacht formaat mm:ss.ms)');
+            return;
+          }
+          const [m, s] = matches[0].split(':');
+          return m * 60 + s;
+        }
 
         MidiParser.parse(document.getElementById('midi-file-input'), (mid) => {
           const bpm = document.getElementById('midi-file-bpm-input').value * 1;
@@ -416,6 +496,9 @@
   </script>
   <textarea id="lyrics">
   </textarea>
+  <div>
+    <button id="clear">Verwijder alles</button>
+  </div>
 </body>
 
 </html>
