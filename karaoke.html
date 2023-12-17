@@ -434,7 +434,7 @@
             return;
           }
           const [m, s] = matches[0].split(':');
-          return m * 60 + s;
+          return m * 60 + s * 1;
         }
 
         MidiParser.parse(document.getElementById('midi-file-input'), (mid) => {
