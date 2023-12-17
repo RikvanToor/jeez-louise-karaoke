@@ -179,6 +179,8 @@
             const line = [];
             if (i > 0) {
               lastTiming = document.state.wordData[i-1].end;
+            } else {
+              lastTiming = document.state.wordData[0].start;
             }
             if (words[0]) {
               if(document.state.wordData[i]) {
